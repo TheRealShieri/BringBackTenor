@@ -13,7 +13,7 @@
 
 Are you tired of Discord's built-in GIF search being restricted, broken, or forcing you to use Giphy? **Bring Back Tenor** adds a dedicated, fully-functional Tenor GIF search panel directly into your Discord chat bar. 
 
-It seamlessly integrates into the UI, bypasses Discord's CORS restrictions, and ensures that the GIFs you select are properly embedded in your chat.
+It seamlessly integrates into the UI, and brings back the old Tenor that we used to love.
 
 ## Features
 
@@ -40,12 +40,6 @@ It seamlessly integrates into the UI, bypasses Discord's CORS restrictions, and 
 3. Type in a search term, or browse the initial trending results.
 4. Click any GIF to instantly send it to the current channel.
    *(If direct sending fails, the plugin will automatically copy the link to your clipboard so you can just `Ctrl+V` and hit Enter).*
-
-## Technical Details
-
-Discord's strict CSP (Content Security Policy) and CORS rules make it difficult to scrape Tenor directly via the DOM `fetch` API. Bring Back Tenor circumvents this by utilizing Node.js native `https` module (available in the BetterDiscord Electron environment).
-
-For sending messages, it uses Electron's native clipboard to paste the GIF URL directly into the chat box and immediately simulates an `Enter` keypress, bypassing the need to interface with fragile internal Discord webpack modules like `sendMessage`.
 
 ## Contributing
 
