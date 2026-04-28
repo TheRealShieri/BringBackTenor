@@ -66,8 +66,6 @@ const STYLES = /* css */ `
 .tenor-panel {
     position: fixed;
     z-index: 10000;
-    width: 460px;
-    height: 520px;
     display: flex;
     flex-direction: column;
     background: var(--background-floating, #2b2d31);
@@ -78,6 +76,10 @@ const STYLES = /* css */ `
         0 0 0 1px rgba(255,255,255,0.04);
     overflow: hidden;
     animation: tenor-slideIn 0.2s cubic-bezier(0.2, 0.9, 0.5, 1.05);
+    min-width: 300px;
+    min-height: 300px;
+    max-width: 90vw;
+    max-height: 85vh;
 }
 @keyframes tenor-slideIn {
     from {
@@ -88,6 +90,30 @@ const STYLES = /* css */ `
         opacity: 1;
         transform: translateY(0) scale(1);
     }
+}
+/* Resize handles */
+.tenor-resize-left,
+.tenor-resize-top,
+.tenor-resize-corner {
+    position: absolute;
+    z-index: 10001;
+}
+.tenor-resize-left {
+    left: 0; top: 12px; bottom: 12px; width: 5px;
+    cursor: ew-resize;
+}
+.tenor-resize-top {
+    top: 0; left: 12px; right: 12px; height: 5px;
+    cursor: ns-resize;
+}
+.tenor-resize-corner {
+    top: 0; left: 0; width: 12px; height: 12px;
+    cursor: nwse-resize;
+}
+.tenor-resize-left:hover,
+.tenor-resize-top:hover,
+.tenor-resize-corner:hover {
+    background: rgba(88, 101, 242, 0.15);
 }
 
 /* ═══════════════════════════════════════════ */
@@ -159,8 +185,6 @@ const STYLES = /* css */ `
     box-shadow: 0 0 0 2px var(--brand-500, #5865f2);
 }
 
-
-
 /* ═══════════════════════════════════════════ */
 /* CONTENT                                     */
 /* ═══════════════════════════════════════════ */
@@ -187,7 +211,7 @@ const STYLES = /* css */ `
 /* GRID                                        */
 /* ═══════════════════════════════════════════ */
 .tenor-grid {
-    column-count: 2;
+    column-count: var(--tenor-columns, 2);
     column-gap: 6px;
     padding: 0 4px 10px;
 }
@@ -310,8 +334,6 @@ const STYLES = /* css */ `
     background: var(--brand-560, #4752c4);
 }
 
-
-
 /* ═══════════════════════════════════════════ */
 /* FOOTER                                      */
 /* ═══════════════════════════════════════════ */
@@ -356,6 +378,12 @@ module.exports = class BringBackTenor {
 
         this.outsideClickBound = this.handleOutsideClick.bind(this);
         this.lastQuery = "";
+        this._resizing = false;
+
+        // Load saved panel size or use defaults
+        const saved = BdApi.Data.load("BringBackTenor", "panelSize");
+        this.panelWidth = saved?.width || 460;
+        this.panelHeight = saved?.height || 520;
 
         // Node.js modules for CORS-free HTTP requests
         // BetterDiscord runs in Electron with Node.js access
@@ -414,11 +442,8 @@ module.exports = class BringBackTenor {
     }
 
     tryInjectButton() {
-        // Skip if already present
         if (document.querySelector(".tenor-btn")) return;
 
-        // Find the expression picker button area (near emoji/gif/sticker buttons)
-        // Try multiple selectors for resilience across Discord updates
         const selectors = [
             'div[class*="channelTextArea"] div[class*="buttons_"]',
             'div[class*="channelTextArea"] div[class*="buttons-"]',
@@ -474,7 +499,6 @@ module.exports = class BringBackTenor {
     openPanel() {
         if (this.panelEl) return;
 
-        // Mark button active
         const btn = document.querySelector(".tenor-btn");
         if (btn) btn.classList.add("tenor-btn--active");
 
@@ -482,7 +506,14 @@ module.exports = class BringBackTenor {
         panel.className = "tenor-panel";
         panel.addEventListener("click", (e) => e.stopPropagation());
 
+        // Apply saved size
+        panel.style.width = `${this.panelWidth}px`;
+        panel.style.height = `${this.panelHeight}px`;
+
         panel.innerHTML = `
+            <div class="tenor-resize-left"></div>
+            <div class="tenor-resize-top"></div>
+            <div class="tenor-resize-corner"></div>
             <div class="tenor-header">
                 <div class="tenor-logo">
                     <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
@@ -503,7 +534,6 @@ module.exports = class BringBackTenor {
             <div class="tenor-footer">Powered by Tenor &middot; Click a GIF to send</div>
         `;
 
-        // Wire up events
         const searchInput = panel.querySelector(".tenor-search");
         searchInput.addEventListener("input", (e) => {
             clearTimeout(this.searchDebounce);
@@ -513,7 +543,6 @@ module.exports = class BringBackTenor {
             }, 450);
         });
 
-        // Handle Enter in search
         searchInput.addEventListener("keydown", (e) => {
             if (e.key === "Enter") {
                 clearTimeout(this.searchDebounce);
@@ -524,11 +553,17 @@ module.exports = class BringBackTenor {
 
         panel.querySelector(".tenor-close").addEventListener("click", () => this.closePanel());
 
+        // Attach resize handles
+        this.attachResize(panel.querySelector(".tenor-resize-left"), "left");
+        this.attachResize(panel.querySelector(".tenor-resize-top"), "top");
+        this.attachResize(panel.querySelector(".tenor-resize-corner"), "corner");
+
         document.body.appendChild(panel);
         this.panelEl = panel;
         this.isOpen = true;
 
         this.positionPanel();
+        this.updateColumnCount();
         searchInput.focus();
 
         // Close on outside click (delayed to prevent immediate close)
@@ -548,24 +583,76 @@ module.exports = class BringBackTenor {
         if (!btn || !this.panelEl) return;
 
         const rect = btn.getBoundingClientRect();
-        const panelWidth = 460;
-        const panelHeight = 520;
 
-        // Position above the button, aligned to the right
         let bottom = window.innerHeight - rect.top + 8;
         let right = window.innerWidth - rect.right;
 
-        // Prevent overflow left
-        if (window.innerWidth - right < panelWidth) {
-            right = Math.max(8, window.innerWidth - panelWidth - 8);
+        if (window.innerWidth - right < this.panelWidth) {
+            right = Math.max(8, window.innerWidth - this.panelWidth - 8);
         }
-        // Prevent overflow top
-        if (bottom + panelHeight > window.innerHeight) {
+        if (bottom + this.panelHeight > window.innerHeight) {
             bottom = 8;
         }
 
         this.panelEl.style.bottom = `${bottom}px`;
         this.panelEl.style.right = `${right}px`;
+    }
+
+    // ═══════════════════════════════════════
+    // PANEL RESIZE
+    // ═══════════════════════════════════════
+
+    attachResize(handle, direction) {
+        if (!handle) return;
+
+        handle.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this._resizing = true;
+
+            const startX = e.clientX;
+            const startY = e.clientY;
+            const startWidth = this.panelWidth;
+            const startHeight = this.panelHeight;
+
+            const onMouseMove = (e) => {
+                const dx = startX - e.clientX; // inverted: dragging left = wider
+                const dy = startY - e.clientY; // inverted: dragging up = taller
+
+                if (direction === "left" || direction === "corner") {
+                    this.panelWidth = Math.max(300, Math.min(startWidth + dx, window.innerWidth * 0.9));
+                    this.panelEl.style.width = `${this.panelWidth}px`;
+                }
+                if (direction === "top" || direction === "corner") {
+                    this.panelHeight = Math.max(300, Math.min(startHeight + dy, window.innerHeight * 0.85));
+                    this.panelEl.style.height = `${this.panelHeight}px`;
+                }
+
+                this.updateColumnCount();
+            };
+
+            const onMouseUp = () => {
+                this._resizing = false;
+                document.removeEventListener("mousemove", onMouseMove);
+                document.removeEventListener("mouseup", onMouseUp);
+
+                // Save size for next time
+                BdApi.Data.save("BringBackTenor", "panelSize", {
+                    width: this.panelWidth,
+                    height: this.panelHeight,
+                });
+            };
+
+            document.addEventListener("mousemove", onMouseMove);
+            document.addEventListener("mouseup", onMouseUp);
+        });
+    }
+
+    updateColumnCount() {
+        if (!this.panelEl) return;
+        // ~200px per column, minimum 2
+        const cols = Math.max(2, Math.floor(this.panelWidth / 200));
+        this.panelEl.style.setProperty("--tenor-columns", cols);
     }
 
     closePanel() {
@@ -597,12 +684,11 @@ module.exports = class BringBackTenor {
         const content = this.panelEl?.querySelector("#tenor-content");
         if (!content) return;
 
-        // Show skeleton loading
         content.innerHTML = this.buildSkeleton();
 
         try {
             const gifs = await this.fetchGifs(query);
-            if (!this.panelEl) return; // panel was closed during fetch
+            if (!this.panelEl) return;
             this.renderGifGrid(gifs, content);
         } catch (err) {
             if (!this.panelEl) return;
@@ -617,20 +703,9 @@ module.exports = class BringBackTenor {
                     <span>Could not load GIFs</span>
                     <span class="tenor-error-detail">${this.escapeHTML(err.message)}</span>
                     <button class="tenor-retry" id="tenor-retry-btn">Try Again</button>
-                    <button class="tenor-retry" id="tenor-browse-btn"
-                            style="background:var(--background-modifier-accent);color:var(--text-normal);margin-top:4px;">
-                        Switch to Browse Mode
-                    </button>
                 </div>
             `;
             content.querySelector("#tenor-retry-btn")?.addEventListener("click", () => this.doSearch(query));
-            content.querySelector("#tenor-browse-btn")?.addEventListener("click", () => {
-                this.currentMode = "browse";
-                this.panelEl?.querySelectorAll(".tenor-tab").forEach(t => {
-                    t.classList.toggle("tenor-tab--active", t.dataset.mode === "browse");
-                });
-                this.doBrowse(query);
-            });
         }
     }
 
@@ -661,7 +736,6 @@ module.exports = class BringBackTenor {
                         "Accept-Language": "en-US,en;q=0.9",
                     },
                 }, (res) => {
-                    // Follow redirects (301, 302, 307, 308)
                     if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                         this.nodeFetch(res.headers.location).then(resolve).catch(reject);
                         return;
@@ -709,10 +783,11 @@ module.exports = class BringBackTenor {
         return await response.text();
     }
 
-    parseGifs(html) {
-        const gifs = [];
-        const seen = new Set();
+    // ═══════════════════════════════════════
+    // GIF PARSING
+    // ═══════════════════════════════════════
 
+    parseGifs(html) {
         // ─── Strategy 1: Parse __NEXT_DATA__ (Next.js SSR data) ───
         const nextDataMatch = html.match(
             /<script\s+id="__NEXT_DATA__"\s+type="application\/json"[^>]*>([\s\S]*?)<\/script>/
@@ -727,164 +802,80 @@ module.exports = class BringBackTenor {
             }
         }
 
-        // ─── Strategy 2: Regex for media.tenor.com URLs ───
-        // Match common Tenor media URL patterns
-        const patterns = [
-            /https:\/\/media1?\.tenor\.com\/[A-Za-z0-9_\-\/]+\.(?:gif|mp4|webm)/g,
-            /https:\/\/c\.tenor\.com\/[A-Za-z0-9_\-\/]+\.(?:gif|mp4|webm)/g,
-            /https:\/\/media\.tenor\.com\/[A-Za-z0-9_\-\/]+\/[A-Za-z0-9_\-]+\.(?:gif|mp4)/g,
-        ];
+        // ─── Strategy 2: Collect share URLs from the HTML ───
+        const shareUrls = new Map();
+        const shareRe = /https:\/\/tenor\.com\/view\/([\w-]+)/g;
+        let m;
+        while ((m = shareRe.exec(html)) !== null) {
+            if (!shareUrls.has(m[1])) shareUrls.set(m[1], m[0]);
+        }
 
-        for (const pattern of patterns) {
-            let match;
-            while ((match = pattern.exec(html)) !== null) {
-                const gifUrl = match[0];
-                // Deduplicate and skip tiny thumbnails
-                const key = gifUrl.replace(/https:\/\/[^/]+/, "");
-                if (!seen.has(key) && !gifUrl.includes("nano") && !gifUrl.includes("search-icon")) {
-                    seen.add(key);
-                    gifs.push({
-                        preview: gifUrl,
-                        url: gifUrl,
-                        description: "",
-                    });
+        // ─── Strategy 3: Collect media URLs, grouped by base hash ───
+        // Tenor media URLs: https://media.tenor.com/{baseHash}{formatCode}/{filename}.{ext}
+        // Format codes: AAAAM=mediumgif, AAAAd=HD, AAAAC=nanogif, AAAP1=mp4
+        // We extract baseHash to group all quality variants of the same GIF.
+        const gifsByHash = new Map();
+        const mediaRe = /https:\/\/media1?\.tenor\.com\/(?:m\/)?([A-Za-z0-9_-]+?)(AAA[A-Za-z0-9]{1,3})\/([\w-]+)\.(gif|mp4|webm|webp)/g;
+        while ((m = mediaRe.exec(html)) !== null) {
+            const [fullUrl, baseHash, formatCode, filename, ext] = m;
+            if (fullUrl.includes("nano") || fullUrl.includes("search-icon")) continue;
+            if (!gifsByHash.has(baseHash)) {
+                gifsByHash.set(baseHash, { filename, formats: {} });
+            }
+            gifsByHash.get(baseHash).formats[formatCode] = { url: fullUrl, ext };
+        }
+
+        // ─── Build results: one entry per unique GIF ───
+        const gifs = [];
+        for (const [baseHash, data] of gifsByHash) {
+            const formats = data.formats;
+            const filename = data.filename;
+
+            // Pick best preview for the grid
+            const previewFormat =
+                formats["AAAAM"] ||
+                formats["AAAAC"] ||
+                Object.values(formats).find(f => f.ext === "gif") ||
+                Object.values(formats)[0];
+
+            // Match to a share URL by filename
+            let sendUrl = null;
+            for (const [slug, url] of shareUrls) {
+                if (slug.includes(filename)) {
+                    sendUrl = url;
+                    break;
                 }
             }
-        }
 
-        // ─── Strategy 3: Parse HTML img/video tags ───
-        if (gifs.length === 0) {
-            try {
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, "text/html");
-
-                // Find img tags linking to tenor media
-                doc.querySelectorAll('img[src*="tenor.com"]').forEach((img) => {
-                    const src = img.getAttribute("src");
-                    if (src && !seen.has(src)) {
-                        seen.add(src);
-                        gifs.push({
-                            preview: src,
-                            url: src,
-                            description: img.getAttribute("alt") || "",
-                        });
-                    }
-                });
-
-                // Find video source tags
-                doc.querySelectorAll('video source[src*="tenor.com"]').forEach((src) => {
-                    const srcUrl = src.getAttribute("src");
-                    if (srcUrl && !seen.has(srcUrl)) {
-                        seen.add(srcUrl);
-                        gifs.push({
-                            preview: srcUrl,
-                            url: srcUrl,
-                            description: "",
-                        });
-                    }
-                });
-
-                // Find og:image / twitter:image meta tags
-                doc.querySelectorAll('meta[property="og:image"], meta[name="twitter:image"]').forEach((meta) => {
-                    const content = meta.getAttribute("content");
-                    if (content && content.includes("tenor") && !seen.has(content)) {
-                        seen.add(content);
-                        gifs.push({
-                            preview: content,
-                            url: content,
-                            description: "",
-                        });
-                    }
-                });
-            } catch (e) {
-                console.warn("[BringBackTenor] HTML parse error:", e);
-            }
-        }
-
-        // ─── Strategy 4: Find Tenor share page URLs ───
-        if (gifs.length === 0) {
-            const sharePattern = /https:\/\/tenor\.com\/view\/[a-zA-Z0-9\-]+-(\d+)/g;
-            let match;
-            while ((match = sharePattern.exec(html)) !== null) {
-                const shareUrl = match[0];
-                if (!seen.has(shareUrl)) {
-                    seen.add(shareUrl);
-                    gifs.push({
-                        preview: shareUrl, // Will be a page URL, not an image
-                        url: shareUrl,
-                        description: "",
-                        isShareUrl: true,
-                    });
-                }
-            }
-        }
-
-        return this.filterGifOnly(gifs);
-    }
-
-    /**
-     * Convert all URLs to .gif format and remove any that can't be converted.
-     * Discord only embeds .gif files, not .mp4 or .webm.
-     */
-    filterGifOnly(gifs) {
-        const seen = new Set();
-        const filtered = [];
-
-        for (const gif of gifs) {
-            // Convert the send URL to .gif
-            const gifUrl = this.toGifUrl(gif.url);
-            if (!gifUrl) continue; // skip if we can't make a .gif URL
-
-            // Deduplicate by the .gif URL
-            if (seen.has(gifUrl)) continue;
-            seen.add(gifUrl);
-
-            filtered.push({
-                ...gif,
-                url: gifUrl,
-                // Keep preview as-is (mp4 previews still work for display in our grid)
+            gifs.push({
+                preview: previewFormat.url,
+                url: sendUrl || previewFormat.url,
+                description: filename.replace(/-/g, " "),
             });
         }
 
-        return filtered;
-    }
+        if (gifs.length > 0) return gifs;
 
-    /**
-     * Convert a Tenor media URL to its .gif equivalent.
-     * Returns null if the URL can't be converted.
-     */
-    toGifUrl(url) {
-        if (!url) return null;
-
-        // Already a .gif
-        if (url.endsWith(".gif")) return url;
-
-        // Tenor share/view page URLs are fine — Discord embeds these
-        if (url.includes("tenor.com/view/")) return url;
-
-        // Convert .mp4 / .webm / .webp to .gif
-        const converted = url.replace(/\.(mp4|webm|webp)(\?.*)?$/, ".gif");
-        if (converted !== url && converted.includes("tenor.com")) {
-            return converted;
+        // ─── Strategy 4: Share URLs only (last resort) ───
+        for (const [slug, url] of shareUrls) {
+            gifs.push({
+                preview: url,
+                url: url,
+                description: slug.replace(/-\d+$/, "").replace(/-/g, " "),
+                isShareUrl: true,
+            });
         }
 
-        // If it's a tenor media URL without a known extension, append .gif
-        if (url.includes("media.tenor.com") || url.includes("media1.tenor.com") || url.includes("c.tenor.com")) {
-            return url;
-        }
-
-        // Not a recognizable tenor media URL — skip it
-        return null;
+        return gifs;
     }
 
     extractFromNextData(data) {
         const gifs = [];
+        const seenIds = new Set();
         try {
-            // Navigate common Next.js data structures
             const pageProps = data?.props?.pageProps;
             if (!pageProps) return gifs;
 
-            // Try different possible data locations
             const collections = [
                 pageProps?.results,
                 pageProps?.gifs,
@@ -896,16 +887,23 @@ module.exports = class BringBackTenor {
             for (const collection of collections) {
                 if (!Array.isArray(collection)) continue;
                 for (const item of collection) {
+                    const id = item?.id || item?.itemid;
+                    if (id && seenIds.has(id)) continue;
+                    if (id) seenIds.add(id);
+
                     const gif = this.extractSingleGif(item);
                     if (gif) gifs.push(gif);
                 }
             }
 
-            // Also check for nested data in tags/categories
             if (pageProps?.tags) {
                 for (const tag of Object.values(pageProps.tags)) {
                     if (tag?.results) {
                         for (const item of tag.results) {
+                            const id = item?.id || item?.itemid;
+                            if (id && seenIds.has(id)) continue;
+                            if (id) seenIds.add(id);
+
                             const gif = this.extractSingleGif(item);
                             if (gif) gifs.push(gif);
                         }
@@ -921,17 +919,28 @@ module.exports = class BringBackTenor {
     extractSingleGif(item) {
         if (!item) return null;
 
-        // Try v2 API format
+        // Build the share URL (tenor.com/view/...) — Discord auto-embeds these
+        const shareUrl = item.itemurl || item.url;
+        const id = item.id || item.itemid;
+        const sendUrl = (shareUrl && shareUrl.includes("tenor.com/view/"))
+            ? shareUrl
+            : id
+                ? `https://tenor.com/view/${id}`
+                : null;
+
+        // Try v2 API format: pick tinygif for fast preview
         if (item.media_formats) {
-            const gif = item.media_formats.gif || item.media_formats.mediumgif || item.media_formats.tinygif;
-            const preview = item.media_formats.tinygif || item.media_formats.nanogif || gif;
-            if (gif?.url) {
+            const hdGif = item.media_formats.gif;
+            const preview = item.media_formats.tinygif || item.media_formats.mediumgif || hdGif;
+            const previewUrl = preview?.url || hdGif?.url;
+
+            if (previewUrl && sendUrl) {
                 return {
-                    preview: preview?.url || gif.url,
-                    url: gif.url,
+                    preview: previewUrl,
+                    url: sendUrl,
                     description: item.content_description || item.title || "",
-                    width: gif.dims?.[0],
-                    height: gif.dims?.[1],
+                    width: preview?.dims?.[0],
+                    height: preview?.dims?.[1],
                 };
             }
         }
@@ -939,32 +948,32 @@ module.exports = class BringBackTenor {
         // Try v1 API format
         if (item.media && Array.isArray(item.media)) {
             const mediaObj = item.media[0];
-            const gif = mediaObj?.gif || mediaObj?.mediumgif;
-            const preview = mediaObj?.tinygif || mediaObj?.nanogif || gif;
-            if (gif?.url) {
+            const hdGif = mediaObj?.gif;
+            const preview = mediaObj?.tinygif || mediaObj?.mediumgif || hdGif;
+            const previewUrl = preview?.url || hdGif?.url;
+
+            if (previewUrl && sendUrl) {
                 return {
-                    preview: preview?.url || gif.url,
-                    url: gif.url,
+                    preview: previewUrl,
+                    url: sendUrl,
                     description: item.content_description || item.title || "",
-                    width: gif.dims?.[0],
-                    height: gif.dims?.[1],
+                    width: preview?.dims?.[0],
+                    height: preview?.dims?.[1],
                 };
             }
         }
 
-        // Try simple URL field
-        if (item.url && item.url.includes("tenor")) {
+        // Fallback: if we at least have a share URL
+        if (sendUrl) {
             return {
-                preview: item.preview || item.url,
-                url: item.url,
+                preview: sendUrl,
+                url: sendUrl,
                 description: item.description || item.title || "",
             };
         }
 
         return null;
     }
-
-
 
     // ═══════════════════════════════════════
     // RENDERING
@@ -989,7 +998,6 @@ module.exports = class BringBackTenor {
         grid.className = "tenor-grid";
 
         for (const gif of gifs) {
-            // Skip share URLs without actual media
             if (gif.isShareUrl) continue;
 
             const item = document.createElement("div");
@@ -1020,13 +1028,11 @@ module.exports = class BringBackTenor {
                 item.appendChild(img);
             }
 
-            // Send overlay label
             const sendLabel = document.createElement("span");
             sendLabel.className = "tenor-item-send";
             sendLabel.textContent = "Send";
             item.appendChild(sendLabel);
 
-            // Click handler
             item.addEventListener("click", () => {
                 this.sendGif(gif.url);
             });
@@ -1037,12 +1043,11 @@ module.exports = class BringBackTenor {
         container.innerHTML = "";
         container.appendChild(grid);
 
-        // If no visible items after filtering
         if (grid.children.length === 0) {
             container.innerHTML = `
                 <div class="tenor-empty">
                     <span>No GIFs could be displayed</span>
-                    <span class="tenor-empty-sub">Try the Browse mode or a different search</span>
+                    <span class="tenor-empty-sub">Try a different search</span>
                 </div>
             `;
         }
@@ -1064,20 +1069,16 @@ module.exports = class BringBackTenor {
     async sendGif(url) {
         this.closePanel();
 
-        // Save whatever is in the clipboard so we can restore it
         let previousClipboard = "";
         try {
             previousClipboard = await navigator.clipboard.readText();
         } catch { /* ignore */ }
 
         try {
-            // Step 1: Focus the chat textbox
             const textbox = document.querySelector('[role="textbox"]');
             if (!textbox) throw new Error("Chat textbox not found");
             textbox.focus();
 
-            // Step 2: Write the GIF URL to clipboard
-            // Try Electron's clipboard first (more reliable), fall back to web API
             let electronClipboard = null;
             try {
                 electronClipboard = require("electron").clipboard;
@@ -1093,12 +1094,9 @@ module.exports = class BringBackTenor {
                 await navigator.clipboard.writeText(url);
             }
 
-            // Step 3: Simulate a paste via execCommand('paste')
-            // In Electron, this actually works and properly updates Slate.js state
             const pasted = document.execCommand("paste");
 
             if (!pasted) {
-                // Fallback: simulate a ClipboardEvent paste
                 const clipboardData = new DataTransfer();
                 clipboardData.setData("text/plain", url);
                 const pasteEvent = new ClipboardEvent("paste", {
@@ -1109,7 +1107,6 @@ module.exports = class BringBackTenor {
                 textbox.dispatchEvent(pasteEvent);
             }
 
-            // Step 4: Wait for Slate to process the paste, then press Enter to send
             await new Promise((r) => setTimeout(r, 150));
 
             const enterDown = new KeyboardEvent("keydown", {
@@ -1124,7 +1121,6 @@ module.exports = class BringBackTenor {
 
             BdApi.UI.showToast("GIF sent!", { type: "success" });
 
-            // Restore previous clipboard content
             try {
                 if (previousClipboard) {
                     if (electronClipboard) {
@@ -1178,8 +1174,8 @@ module.exports = class BringBackTenor {
                     This plugin scrapes the Tenor website to display GIFs. No API key is needed.
                 </p>
                 <p style="font-size:13px; margin:0; color:var(--text-muted);">
-                    <strong>Search mode:</strong> Fetches GIF data from Tenor's pages and displays them in a grid.<br/>
-                    <strong>Browse mode:</strong> Opens Tenor's website in an embedded frame for manual browsing.
+                    <strong>How it works:</strong> Fetches GIF data from Tenor's pages and displays them in a grid.
+                    Click any GIF to send its share URL to the current channel.
                 </p>
             </div>
 
@@ -1191,7 +1187,6 @@ module.exports = class BringBackTenor {
                     <li>Click the <strong>GIF/T</strong> button in the chat toolbar</li>
                     <li>Type your search query and press Enter or wait</li>
                     <li>Click any GIF to send it to the current channel</li>
-                    <li>If Search mode doesn't work, switch to Browse mode</li>
                 </ol>
             </div>
 
@@ -1199,8 +1194,8 @@ module.exports = class BringBackTenor {
                         border-left:3px solid var(--info-warning-foreground, #faa81a);
                         border-radius:4px;">
                 <p style="font-size:12px; margin:0; color:var(--text-normal);">
-                    <strong>Note:</strong> If GIFs don't load in Search mode, Tenor may have changed their
-                    page structure. Use Browse mode as a fallback — it embeds the Tenor website directly.
+                    <strong>Note:</strong> If GIFs don't load, Tenor may have changed their
+                    page structure. Please check for plugin updates.
                 </p>
             </div>
 
