@@ -1,7 +1,7 @@
 /**
  * @name BringBackTenor
  * @displayName Bring Back Tenor
- * @version 1.0.0
+ * @version 1.0.1
  * @author TheRealShieri
  * @description Browse and send Tenor GIFs directly from Discord. Adds a Tenor search panel to the chat bar as an alternative to Discord's built-in GIF picker.
  * @source https://github.com/TheRealShieri/BringBackTenor
